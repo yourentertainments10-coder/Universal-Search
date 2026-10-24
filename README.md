@@ -8,6 +8,7 @@ Nothing is uploaded; the server binds to `127.0.0.1` only.
    - **Milestone 2 done:** SQLite index (`data/index.db`), incremental rescans, deleted files drop out
    - **Milestone 3 done:** background text extraction (TXT, MD, DOCX, PDF) and OCR (images, scanned PDFs)
    - **Milestone 4 done:** ranked keyword and phrase search, type and date filters, snippets, thumbnails, open original / show in folder
+   - **Milestone 5 done:** retries for temporary failures, index reset, folder management, missing-file handling, offline and privacy checks
 2. Search engine: OCR, text extraction, SQLite FTS5, incremental indexing
 3. Semantic image search (local embeddings)
 4. Native Android app (Kotlin, Jetpack Compose)
@@ -36,6 +37,15 @@ Type in the search box; results update as you type.
 - **Open** opens the original file, **Show in folder** selects it in Explorer, **Text** shows what was extracted.
 - Files appear in search by name as soon as they are scanned, and by content once indexing has processed them.
 - Previews are cached in `data/thumbs/`; deleting `data/` resets everything (your original files are never touched).
+
+## Keeping the index healthy
+- **Folders:** the *Folders and indexing* section lists every scanned folder with its file count. **Rescan** refreshes one, **Rescan all** refreshes every reachable one, **Remove** forgets a folder (the files on disk are never touched).
+- **Unplugged drives:** if a folder is unavailable, rescanning leaves its files in the index. They stay searchable, are marked *missing*, and recover when the drive is back.
+- **Deleted files:** rescanning removes files that no longer exist. Until then they show as *missing* and cannot be opened.
+- **Temporary failures** (for example a file open in another program) are retried automatically after 10 seconds, 1 minute and 5 minutes before the file is marked failed. Corrupt files fail immediately. **Retry failed** puts everything back in the queue.
+- **Find problems:** use the *Any status* menu next to the filters to list failed, waiting or needs-OCR files; **Text** shows the error.
+- **Reset search index** deletes the database and previews after a confirmation. It never deletes your files.
+- Privacy and offline behaviour are covered by tests: the pipeline is run with network access blocked, the page loads nothing from the internet, and the server only listens on `127.0.0.1`.
 
 ## OCR setup (needed for images and scanned PDFs)
 Text files, DOCX and PDFs with a text layer work out of the box. For images and scanned PDFs install one OCR engine:

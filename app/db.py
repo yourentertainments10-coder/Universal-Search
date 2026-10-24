@@ -76,6 +76,11 @@ MIGRATIONS = [
         INSERT INTO files_fts (rowid, name, text) SELECT id, name, '' FROM files WHERE id = old.file_id;
     END;
     """,
+    # 4: retry bookkeeping for temporary failures (Milestone 5)
+    """
+    ALTER TABLE files ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE files ADD COLUMN retry_after TEXT;
+    """,
 ]
 
 FTS_MIGRATION = 3  # first migration that needs SQLite FTS5
@@ -171,3 +176,23 @@ def get_content(conn: sqlite3.Connection, file_id: int, max_chars: int) -> dict 
 def last_root(conn: sqlite3.Connection) -> str | None:
     row = conn.execute("SELECT path FROM roots ORDER BY last_scan DESC LIMIT 1").fetchone()
     return row["path"] if row else None
+
+
+def list_roots(conn: sqlite3.Connection) -> list[dict]:
+    """Folders that have been scanned, with how many indexed files each holds."""
+    out = []
+    for r in conn.execute("SELECT path_key, path, last_scan FROM roots ORDER BY last_scan DESC"):
+        prefix = r["path_key"].rstrip(os.sep) + os.sep
+        n = conn.execute(
+            "SELECT COUNT(*) FROM files WHERE substr(path_key, 1, ?) = ?", (len(prefix), prefix)
+        ).fetchone()[0]
+        out.append({"path": r["path"], "last_scan": r["last_scan"], "files": n})
+    return out
+
+
+def reset_index(conn: sqlite3.Connection) -> None:
+    """Delete everything the app has indexed. Original files are never touched."""
+    with conn:
+        conn.execute("DELETE FROM files")  # cascades to content; triggers empty files_fts
+        conn.execute("DELETE FROM roots")
+    conn.execute("VACUUM")  # give the disk space back

@@ -23,6 +23,13 @@
         <button class="chip" data-type="document">Documents</button>
         <label class="inline">From <input type="date" id="dateFrom"></label>
         <label class="inline">To <input type="date" id="dateTo"></label>
+        <select id="statusFilter" aria-label="Filter by indexing status">
+          <option value="">Any status</option>
+          <option value="failed">Failed</option>
+          <option value="needs_ocr">Needs OCR</option>
+          <option value="pending">Waiting</option>
+          <option value="skipped">Skipped</option>
+        </select>
         <select id="sort" aria-label="Sort order">
           <option value="relevance">Best match</option>
           <option value="newest">Newest first</option>
@@ -38,12 +45,14 @@
     <details id="manage" class="panel" open>
       <summary>Folders and indexing</summary>
 
-      <label for="folder">Folder to scan</label>
+      <label for="folder">Add or rescan a folder</label>
       <div class="row">
         <input id="folder" type="text" placeholder="C:\Users\You\Pictures">
         <button id="scanBtn">Scan</button>
+        <button id="rescanAllBtn" class="secondary">Rescan all</button>
       </div>
       <p id="status" class="status"></p>
+      <div id="roots" class="roots"></div>
 
       <div class="row between index-head">
         <strong>Indexing</strong>
@@ -56,6 +65,11 @@
       <div class="bar"><div id="barFill"></div></div>
       <p id="indexStatus" class="status"></p>
       <p id="ocrStatus" class="status"></p>
+
+      <div class="danger">
+        <button id="resetBtn" class="secondary danger-btn">Reset search index</button>
+        <span class="status">Deletes the index and previews. Your original files are never touched.</span>
+      </div>
     </details>
   </main>
 

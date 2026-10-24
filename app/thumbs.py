@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from pathlib import Path
 
@@ -13,9 +14,13 @@ from .extractors import _prepare_image
 THUMB_SIZE = 360
 
 
+def thumbs_dir() -> Path:
+    return db.db_path().parent / "thumbs"
+
+
 def thumb_path(row) -> Path:
     # The modified time is part of the name, so an edited image gets a fresh preview.
-    return db.db_path().parent / "thumbs" / f"{row['id']}_{row['mtime_ns']}.jpg"
+    return thumbs_dir() / f"{row['id']}_{row['mtime_ns']}.jpg"
 
 
 def get_thumbnail(row, size: int = THUMB_SIZE) -> Path | None:
@@ -35,3 +40,25 @@ def get_thumbnail(row, size: int = THUMB_SIZE) -> Path | None:
         return out
     except Exception:
         return None
+
+
+def cleanup(conn) -> int:
+    """Delete previews of images that were removed from the index or have since changed."""
+    folder = thumbs_dir()
+    if not folder.is_dir():
+        return 0
+    valid = {f"{r['id']}_{r['mtime_ns']}.jpg" for r in conn.execute("SELECT id, mtime_ns FROM files WHERE type = 'image'")}
+    removed = 0
+    for p in folder.iterdir():
+        if p.name.endswith(".tmp") or p.name in valid:
+            continue  # leave in-progress writes and current previews alone
+        try:
+            p.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
+
+
+def clear() -> None:
+    shutil.rmtree(thumbs_dir(), ignore_errors=True)

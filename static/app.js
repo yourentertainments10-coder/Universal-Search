@@ -90,6 +90,14 @@ function buildResult(f) {
   badge.className = "badge " + f.status;
   badge.textContent = STATUS_LABEL[f.status] || f.status;
   title.appendChild(badge);
+  if (f.missing) {
+    item.classList.add("missing");
+    const gone = document.createElement("span");
+    gone.className = "badge missing";
+    gone.title = "The file was deleted or its drive is unplugged. Rescan its folder to update the index.";
+    gone.textContent = "missing";
+    title.appendChild(gone);
+  }
 
   const path = document.createElement("div");
   path.className = "path";
@@ -115,11 +123,10 @@ function buildResult(f) {
     b.addEventListener("click", fn);
     return b;
   };
-  actions.append(
-    mk("Open", () => act("/api/open?path=" + encodeURIComponent(f.path), "Open")),
-    mk("Show in folder", () => act("/api/reveal?path=" + encodeURIComponent(f.path), "Show in folder")),
-    mk("Text", () => showText(f))
-  );
+  const openBtn = mk("Open", () => act("/api/open?path=" + encodeURIComponent(f.path), "Open"));
+  const showBtn = mk("Show in folder", () => act("/api/reveal?path=" + encodeURIComponent(f.path), "Show in folder"));
+  openBtn.disabled = showBtn.disabled = Boolean(f.missing);
+  actions.append(openBtn, showBtn, mk("Text", () => showText(f)));
 
   item.append(thumb, body, actions);
   return item;
@@ -130,6 +137,7 @@ function searchUrl(offset) {
   if (activeType) p.set("type", activeType);
   if ($("dateFrom").value) p.set("date_from", $("dateFrom").value);
   if ($("dateTo").value) p.set("date_to", $("dateTo").value);
+  if ($("statusFilter").value) p.set("status", $("statusFilter").value);
   return "/api/search?" + p.toString();
 }
 
@@ -207,6 +215,7 @@ function renderIndex(s) {
   const processed = c.done + c.failed + c.needs_ocr + c.skipped;
   $("barFill").style.width = (s.total ? (processed / s.total) * 100 : 0) + "%";
   let text = `${processed} of ${s.total} files processed: ${c.done} with text, ${c.failed} failed, ${c.needs_ocr} need OCR, ${c.skipped} skipped, ${c.pending} waiting.`;
+  if (s.retrying > 0) text += ` ${s.retrying} will be retried shortly (the file may be open in another program).`;
   if (s.running && s.pausing) text += " Pausing after the current file...";
   else if (s.running && s.current) text += ` Working on ${s.current}`;
   else if (!s.running && c.pending > 0) text += " Paused.";
@@ -253,6 +262,7 @@ $("scanBtn").addEventListener("click", async () => {
       `${d.count} files in this folder: ${d.added} new, ${d.updated} changed, ${d.removed} removed, ${d.unchanged} unchanged.` +
         (d.skipped_folders ? ` ${d.skipped_folders} folder(s) could not be read and were left as they were.` : "")
     );
+    await loadRoots();
     await runSearch(false);
     wasRunning = true;
     refreshIndex();
@@ -261,6 +271,104 @@ $("scanBtn").addEventListener("click", async () => {
   } finally {
     $("scanBtn").disabled = false;
   }
+});
+
+/* ---------- folders, rescan and reset ---------- */
+
+async function loadRoots() {
+  try {
+    const data = await api("/api/roots");
+    const box = $("roots");
+    box.replaceChildren();
+    for (const r of data.roots) {
+      const row = document.createElement("div");
+      row.className = "root";
+      const path = document.createElement("div");
+      path.className = "rpath";
+      path.textContent = r.path;
+      const meta = document.createElement("div");
+      meta.className = "rmeta";
+      meta.textContent = `${r.files} files · scanned ${r.last_scan.slice(0, 16).replace("T", " ")}`;
+      row.append(path, meta);
+      if (!r.available) {
+        const b = document.createElement("span");
+        b.className = "badge unavailable";
+        b.title = "This folder or drive is not reachable right now. Its files stay in the index.";
+        b.textContent = "unavailable";
+        row.appendChild(b);
+      }
+      const rescan = document.createElement("button");
+      rescan.className = "secondary";
+      rescan.textContent = "Rescan";
+      rescan.disabled = !r.available;
+      rescan.addEventListener("click", () => { $("folder").value = r.path; $("scanBtn").click(); });
+      const remove = document.createElement("button");
+      remove.className = "secondary danger-btn";
+      remove.textContent = "Remove";
+      remove.addEventListener("click", () => removeRoot(r));
+      row.append(rescan, remove);
+      box.appendChild(row);
+    }
+    return data.roots;
+  } catch (e) {
+    return [];
+  }
+}
+
+async function removeRoot(r) {
+  if (!confirm(`Remove this folder from the search index?\n\n${r.path}\n\nThe files on disk are not touched.`)) return;
+  try {
+    const d = await api("/api/roots/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder: r.path }),
+    });
+    setScanStatus(`Removed ${d.removed} files from the index.`);
+  } catch (e) {
+    setScanStatus(e.message, true);
+  }
+  await loadRoots();
+  await runSearch(false);
+  refreshIndex();
+}
+
+$("rescanAllBtn").addEventListener("click", async () => {
+  $("rescanAllBtn").disabled = true;
+  setScanStatus("Rescanning all folders...");
+  try {
+    const d = await api("/api/rescan", { method: "POST" });
+    const parts = d.roots.map((r) =>
+      r.unavailable ? `${r.root}: unavailable, left as it was`
+        : r.error ? `${r.root}: ${r.error}`
+        : `${r.root}: ${r.added} new, ${r.updated} changed, ${r.removed} removed`
+    );
+    setScanStatus(parts.length ? parts.join("  |  ") : "No folders to rescan yet.");
+    await loadRoots();
+    await runSearch(false);
+    wasRunning = true;
+    refreshIndex();
+  } catch (e) {
+    setScanStatus(e.message, true);
+  } finally {
+    $("rescanAllBtn").disabled = false;
+  }
+});
+
+$("resetBtn").addEventListener("click", async () => {
+  if (!confirm("Delete the whole search index and all previews?\n\nYour original files are not touched, but you will need to scan your folders again.")) return;
+  $("resetBtn").disabled = true;
+  try {
+    await api("/api/index/reset", { method: "POST" });
+    setScanStatus("Index reset. Scan a folder to start again.");
+  } catch (e) {
+    setScanStatus(e.message, true);
+  } finally {
+    $("resetBtn").disabled = false;
+  }
+  await loadRoots();
+  await runSearch(false);
+  wasRunning = false;
+  refreshIndex();
 });
 
 /* ---------- wiring ---------- */
@@ -273,9 +381,10 @@ $("dlgClose").addEventListener("click", () => $("textDialog").close());
 $("moreBtn").addEventListener("click", () => runSearch(true));
 $("q").addEventListener("input", scheduleSearch);
 $("q").addEventListener("keydown", (e) => { if (e.key === "Enter") { clearTimeout(debounce); runSearch(false); } });
-for (const id of ["dateFrom", "dateTo", "sort"]) $(id).addEventListener("change", () => runSearch(false));
+for (const id of ["dateFrom", "dateTo", "sort", "statusFilter"]) $(id).addEventListener("change", () => runSearch(false));
 $("clearBtn").addEventListener("click", () => {
   $("q").value = ""; $("dateFrom").value = ""; $("dateTo").value = ""; $("sort").value = "relevance";
+  $("statusFilter").value = "";
   document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c.dataset.type === ""));
   activeType = "";
   $("q").focus();
@@ -291,10 +400,8 @@ document.querySelectorAll(".chip").forEach((chip) => {
 });
 
 (async () => {
-  try {
-    const roots = await api("/api/files?limit=1");
-    if (roots.root && !$("folder").value) $("folder").value = roots.root;
-  } catch (e) { /* the search below shows any error */ }
+  const roots = await loadRoots();
+  if (roots.length && !$("folder").value) $("folder").value = roots[0].path;
   const data = await runSearch(false);
   if (data && data.total > 0) $("manage").open = false; // already indexed: keep the search front and centre
   refreshIndex();

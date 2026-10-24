@@ -53,7 +53,7 @@ def sync_folder(conn: sqlite3.Connection, result: ScanResult) -> dict:
             elif row["size"] != f.size or row["mtime_ns"] != f.mtime_ns:
                 conn.execute(
                     """UPDATE files SET size=?, mtime_ns=?, modified=?, status='pending',
-                       indexed_at=? WHERE id=?""",
+                       attempts=0, retry_after=NULL, indexed_at=? WHERE id=?""",
                     (f.size, f.mtime_ns, f.modified, now, row["id"]),
                 )
                 conn.execute("DELETE FROM content WHERE file_id = ?", (row["id"],))
@@ -86,3 +86,15 @@ def sync_folder(conn: sqlite3.Connection, result: ScanResult) -> dict:
         "removed": len(stale),
         "skipped_folders": len(result.failed_dirs),
     }
+
+
+def forget_folder(conn: sqlite3.Connection, folder: str) -> int:
+    """Remove a folder (and everything indexed under it) from the index. Files on disk are untouched."""
+    key = path_key(folder)
+    prefix = _dir_prefix(folder)
+    with conn:
+        cur = conn.execute("DELETE FROM files WHERE substr(path_key, 1, ?) = ?", (len(prefix), prefix))
+        conn.execute(
+            "DELETE FROM roots WHERE path_key = ? OR substr(path_key, 1, ?) = ?", (key, len(prefix), prefix)
+        )
+    return cur.rowcount

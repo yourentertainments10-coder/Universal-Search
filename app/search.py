@@ -1,6 +1,7 @@
 """Query parsing and ranked full-text search over files_fts (SQLite FTS5)."""
 from __future__ import annotations
 
+import os
 import re
 import sqlite3
 import unicodedata
@@ -66,6 +67,7 @@ def run_search(
     sort: str = "relevance",
     limit: int = 20,
     offset: int = 0,
+    status: str | None = None,
 ) -> dict:
     match = build_match(q)
     where: list[str] = []
@@ -80,6 +82,9 @@ def run_search(
     if type:
         where.append("f.type = ?")
         args.append(type)
+    if status:
+        where.append("f.status = ?")
+        args.append(status)
     start = _day(date_from, "start") if date_from else None
     end = _day(date_to, "end") if date_to else None
     if start and end and start > end:
@@ -118,6 +123,7 @@ def run_search(
     for r in rows:
         d = dict(r)
         d["snippet"] = (d["snippet"] or "").replace("\n", " ").strip()
+        d["missing"] = not os.path.isfile(d["path"])  # deleted or on an unplugged drive
         results.append(d)
 
     pending = conn.execute("SELECT COUNT(*) FROM files WHERE status = 'pending'").fetchone()[0]

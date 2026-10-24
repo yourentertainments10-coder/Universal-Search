@@ -68,3 +68,15 @@ details.panel summary { cursor:pointer; font-weight:600; margin-bottom:12px; }
 details.panel:not([open]) summary { margin-bottom:0; }
 .index-head { margin-top:18px; }
 @media (max-width:640px) { .result { grid-template-columns:72px 1fr; } .result .actions { grid-column:1 / -1; flex-direction:row; } }
+
+/* ---- Milestone 5: reliability ---- */
+.roots { display:grid; gap:8px; margin:6px 0 0; }
+.root { display:flex; align-items:center; gap:10px; flex-wrap:wrap; padding:8px 10px; border:1px solid var(--border); border-radius:8px; background:var(--bg); }
+.root .rpath { flex:1; min-width:180px; font-size:13px; overflow-wrap:anywhere; }
+.root .rmeta { font-size:12px; color:var(--muted); }
+.root button { padding:3px 12px; font-size:12px; }
+.badge.missing, .badge.unavailable { color:#d92d20; border-color:#d92d20; }
+.result.missing { opacity:.65; }
+.danger { margin-top:20px; padding-top:14px; border-top:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
+.danger .status { margin:0; }
+button.danger-btn { color:#d92d20; border-color:#d92d20; }

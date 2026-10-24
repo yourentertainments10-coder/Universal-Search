@@ -4,6 +4,7 @@ Run bound to 127.0.0.1 only; nothing leaves the machine.
 Milestone 2: files are stored in SQLite and rescans are incremental.
 Milestone 3: background text extraction (text, DOCX, PDF) and OCR (images, scanned PDFs).
 Milestone 4: ranked keyword/phrase search with filters, snippets, thumbnails.
+Milestone 5: retries, index reset, folder management, missing-file handling.
 """
 from __future__ import annotations
 
@@ -18,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from . import db, search, thumbs
-from .indexer import sync_folder
+from .indexer import forget_folder, sync_folder
 from .scanner import scan_folder
 from .worker import IndexWorker, retry_failed
 
@@ -33,25 +34,72 @@ class ScanRequest(BaseModel):
     folder: str
 
 
-def _indexed_file(path: str):
+def _indexed_file(path: str, must_exist: bool = True):
     """Only allow access to files in the index (blocks arbitrary path access)."""
     with db.connect() as conn:
         row = db.find_file(conn, path)
-    if row is None or not os.path.isfile(row["path"]):
-        raise HTTPException(status_code=404, detail="File not found in index")
+    if row is None:
+        raise HTTPException(status_code=404, detail="File is not in the index")
+    if must_exist and not os.path.isfile(row["path"]):
+        raise HTTPException(
+            status_code=404,
+            detail="This file no longer exists on disk (or its drive is unplugged). Rescan its folder to update the index.",
+        )
     return row
 
 
-@app.post("/api/scan")
-def api_scan(req: ScanRequest):
+def _scan_and_sync(folder: str) -> dict:
     try:
-        result = scan_folder(req.folder)
+        result = scan_folder(folder)
     except (NotADirectoryError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     with db.connect() as conn:
         summary = sync_folder(conn, result)
+        thumbs.cleanup(conn)  # drop previews of files that were removed or changed
+    return summary
+
+
+@app.post("/api/scan")
+def api_scan(req: ScanRequest):
+    summary = _scan_and_sync(req.folder)
     worker.start()  # extract text from new and changed files in the background
     return summary
+
+
+@app.post("/api/rescan")
+def api_rescan():
+    """Rescan every known folder. Folders that are unavailable (unplugged drive) are left untouched."""
+    with db.connect() as conn:
+        roots = db.list_roots(conn)
+    out = []
+    for r in roots:
+        if not os.path.isdir(r["path"]):
+            out.append({"root": r["path"], "unavailable": True})
+            continue
+        try:
+            out.append(_scan_and_sync(r["path"]))
+        except HTTPException as e:
+            out.append({"root": r["path"], "error": e.detail})
+    worker.start()
+    return {"roots": out}
+
+
+@app.get("/api/roots")
+def api_roots():
+    with db.connect() as conn:
+        roots = db.list_roots(conn)
+    for r in roots:
+        r["available"] = os.path.isdir(r["path"])
+    return {"roots": roots}
+
+
+@app.post("/api/roots/remove")
+def api_roots_remove(req: ScanRequest):
+    """Stop indexing a folder and forget everything indexed under it. Files on disk are untouched."""
+    with db.connect() as conn:
+        removed = forget_folder(conn, req.folder)
+        thumbs.cleanup(conn)
+    return {"removed": removed}
 
 
 @app.get("/api/search")
@@ -63,10 +111,11 @@ def api_search(
     sort: str = Query("relevance", pattern="^(relevance|newest|oldest)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    status: str | None = Query(None, pattern="^(pending|done|failed|needs_ocr|skipped)$"),
 ):
     try:
         with db.connect() as conn:
-            return search.run_search(conn, q, type, date_from, date_to, sort, limit, offset)
+            return search.run_search(conn, q, type, date_from, date_to, sort, limit, offset, status)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -109,9 +158,20 @@ def api_index_retry():
     return {"requeued": n}
 
 
+@app.post("/api/index/reset")
+def api_index_reset():
+    """Delete the whole search index and all previews. Original files are never touched."""
+    if not worker.stop_and_wait(60):
+        raise HTTPException(status_code=409, detail="Indexing is still stopping. Try again in a moment.")
+    with db.connect() as conn:
+        db.reset_index(conn)
+    thumbs.clear()
+    return {"reset": True}
+
+
 @app.get("/api/content")
 def api_content(path: str, max_chars: int = Query(20000, ge=100, le=200000)):
-    row = _indexed_file(path)
+    row = _indexed_file(path, must_exist=False)  # stored text stays readable even if the file is gone
     with db.connect() as conn:
         content = db.get_content(conn, row["id"], max_chars)
     return {"name": row["name"], "status": row["status"], "content": content}
