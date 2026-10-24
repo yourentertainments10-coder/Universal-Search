@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI Universal Personal Search</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>Universal Search</h1>
+    <p class="tagline">Find anything you saved, using the way you remember it. Everything stays on this computer.</p>
+  </header>
+
+  <main>
+    <section class="panel">
+      <label for="folder">Folder to scan</label>
+      <div class="row">
+        <input id="folder" type="text" placeholder="C:\Users\You\Pictures">
+        <button id="scanBtn">Scan</button>
+      </div>
+      <p id="status" class="status"></p>
+    </section>
+
+    <section class="panel">
+      <div class="row filters">
+        <button class="chip active" data-type="">All</button>
+        <button class="chip" data-type="image">Images</button>
+        <button class="chip" data-type="pdf">PDFs</button>
+        <button class="chip" data-type="document">Documents</button>
+      </div>
+      <div id="results" class="grid"></div>
+    </section>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>
