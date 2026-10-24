@@ -2,5 +2,3 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 pillow>=10.0
 pypdfium2>=4.30
-rapidocr
-onnxruntime

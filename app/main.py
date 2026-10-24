@@ -3,10 +3,12 @@
 Run bound to 127.0.0.1 only; nothing leaves the machine.
 Milestone 2: files are stored in SQLite and rescans are incremental.
 Milestone 3: background text extraction (text, DOCX, PDF) and OCR (images, scanned PDFs).
+Milestone 4: ranked keyword/phrase search with filters, snippets, thumbnails.
 """
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -15,7 +17,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db
+from . import db, search, thumbs
 from .indexer import sync_folder
 from .scanner import scan_folder
 from .worker import IndexWorker, retry_failed
@@ -50,6 +52,23 @@ def api_scan(req: ScanRequest):
         summary = sync_folder(conn, result)
     worker.start()  # extract text from new and changed files in the background
     return summary
+
+
+@app.get("/api/search")
+def api_search(
+    q: str = Query("", max_length=300),
+    type: str | None = Query(None, pattern="^(image|pdf|document)$"),
+    date_from: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    date_to: str | None = Query(None, pattern=r"^\d{4}-\d{2}-\d{2}$"),
+    sort: str = Query("relevance", pattern="^(relevance|newest|oldest)$"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    try:
+        with db.connect() as conn:
+            return search.run_search(conn, q, type, date_from, date_to, sort, limit, offset)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.get("/api/files")
@@ -104,6 +123,27 @@ def api_preview(path: str):
     if row["type"] != "image":
         raise HTTPException(status_code=400, detail="Preview only for images")
     return FileResponse(row["path"])
+
+
+@app.get("/api/thumb")
+def api_thumb(path: str):
+    row = _indexed_file(path)
+    if row["type"] != "image":
+        raise HTTPException(status_code=404, detail="Only images have previews")
+    thumb = thumbs.get_thumbnail(row)
+    if thumb is None:
+        raise HTTPException(status_code=415, detail="No preview available")
+    return FileResponse(thumb, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
+
+
+@app.post("/api/reveal")
+def api_reveal(path: str):
+    """Show the original file in Windows Explorer."""
+    row = _indexed_file(path)
+    if sys.platform != "win32":
+        raise HTTPException(status_code=501, detail="Show in folder is implemented for Windows only")
+    subprocess.Popen(["explorer", f"/select,{row['path']}"])  # noqa: S603 - path comes from the index
+    return {"revealed": row["name"]}
 
 
 @app.post("/api/open")

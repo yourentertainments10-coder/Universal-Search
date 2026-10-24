@@ -98,7 +98,12 @@ def extract_image(path: str, engine) -> Extraction:
 
 
 def extract_pdf(path: str, engine) -> Extraction:
-    import pypdfium2 as pdfium
+    try:
+        import pypdfium2 as pdfium
+    except ImportError as e:
+        raise RuntimeError(
+            "pypdfium2 is not installed. Run: pip install -r requirements.txt (inside the .venv)"
+        ) from e
 
     pdf = pdfium.PdfDocument(path)
     try:

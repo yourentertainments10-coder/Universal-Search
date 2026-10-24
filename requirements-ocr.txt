@@ -1,3 +1,5 @@
-# Optional OCR engine (pure pip, works offline after install).
+# Optional OCR engine (pure pip, works offline after install; models are bundled).
+# Needs Python 3.13+ friendly packages; the older "rapidocr-onnxruntime" only supports Python <= 3.12.
 # Alternative: install Tesseract OCR for Windows and the app will use it instead.
-rapidocr-onnxruntime>=1.3
+rapidocr
+onnxruntime

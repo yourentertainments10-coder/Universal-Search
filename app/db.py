@@ -51,7 +51,34 @@ MIGRATIONS = [
     );
     CREATE INDEX idx_files_status ON files(status);
     """,
+    # 3: full-text search (Milestone 4). One FTS row per file (filename + extracted text),
+    # kept in sync by triggers. The INSERT...SELECT backfills files indexed before this migration.
+    """
+    CREATE VIRTUAL TABLE files_fts USING fts5(name, text, tokenize='unicode61 remove_diacritics 2');
+    INSERT INTO files_fts (rowid, name, text)
+        SELECT f.id, f.name, COALESCE(c.text, '') FROM files f LEFT JOIN content c ON c.file_id = f.id;
+    CREATE TRIGGER files_fts_ai AFTER INSERT ON files BEGIN
+        INSERT INTO files_fts (rowid, name, text) VALUES (new.id, new.name, '');
+    END;
+    CREATE TRIGGER files_fts_ad AFTER DELETE ON files BEGIN
+        DELETE FROM files_fts WHERE rowid = old.id;
+    END;
+    CREATE TRIGGER content_fts_ai AFTER INSERT ON content BEGIN
+        DELETE FROM files_fts WHERE rowid = new.file_id;
+        INSERT INTO files_fts (rowid, name, text) SELECT id, name, new.text FROM files WHERE id = new.file_id;
+    END;
+    CREATE TRIGGER content_fts_au AFTER UPDATE ON content BEGIN
+        DELETE FROM files_fts WHERE rowid = new.file_id;
+        INSERT INTO files_fts (rowid, name, text) SELECT id, name, new.text FROM files WHERE id = new.file_id;
+    END;
+    CREATE TRIGGER content_fts_ad AFTER DELETE ON content BEGIN
+        DELETE FROM files_fts WHERE rowid = old.file_id;
+        INSERT INTO files_fts (rowid, name, text) SELECT id, name, '' FROM files WHERE id = old.file_id;
+    END;
+    """,
 ]
+
+FTS_MIGRATION = 3  # first migration that needs SQLite FTS5
 
 
 def db_path() -> Path:
@@ -61,8 +88,21 @@ def db_path() -> Path:
     return Path(__file__).resolve().parent.parent / "data" / "index.db"
 
 
+def _require_fts5(conn: sqlite3.Connection) -> None:
+    try:
+        conn.execute("CREATE VIRTUAL TABLE temp.fts5_probe USING fts5(x)")
+        conn.execute("DROP TABLE temp.fts5_probe")
+    except sqlite3.OperationalError as e:
+        raise RuntimeError(
+            "This Python's SQLite was built without FTS5, which search needs. "
+            "Install Python from python.org (it includes FTS5)."
+        ) from e
+
+
 def migrate(conn: sqlite3.Connection) -> None:
     current = conn.execute("PRAGMA user_version").fetchone()[0]
+    if current < FTS_MIGRATION:
+        _require_fts5(conn)
     for version, sql in enumerate(MIGRATIONS, start=1):
         if version > current:
             conn.executescript(f"BEGIN;{sql}PRAGMA user_version={version};COMMIT;")
@@ -111,7 +151,7 @@ def status_counts(conn: sqlite3.Connection) -> dict:
 
 def find_file(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT id, path, name, ext, type, status FROM files WHERE path_key = ?", (path_key(path),)
+        "SELECT id, path, name, ext, type, status, mtime_ns FROM files WHERE path_key = ?", (path_key(path),)
     ).fetchone()
 
 

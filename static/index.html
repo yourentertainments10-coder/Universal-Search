@@ -14,16 +14,38 @@
 
   <main>
     <section class="panel">
+      <input id="q" type="search" autofocus autocomplete="off" spellcheck="false"
+             placeholder="Search files, text inside screenshots and PDFs...  e.g.  trigonometry formula   or   &quot;college farewell&quot;">
+      <div class="row filters">
+        <button class="chip active" data-type="">All</button>
+        <button class="chip" data-type="image">Images</button>
+        <button class="chip" data-type="pdf">PDFs</button>
+        <button class="chip" data-type="document">Documents</button>
+        <label class="inline">From <input type="date" id="dateFrom"></label>
+        <label class="inline">To <input type="date" id="dateTo"></label>
+        <select id="sort" aria-label="Sort order">
+          <option value="relevance">Best match</option>
+          <option value="newest">Newest first</option>
+          <option value="oldest">Oldest first</option>
+        </select>
+        <button id="clearBtn" class="secondary">Clear</button>
+      </div>
+      <p id="resultInfo" class="status"></p>
+      <div id="results" class="list"></div>
+      <button id="moreBtn" class="secondary more-btn" hidden>Show more</button>
+    </section>
+
+    <details id="manage" class="panel" open>
+      <summary>Folders and indexing</summary>
+
       <label for="folder">Folder to scan</label>
       <div class="row">
         <input id="folder" type="text" placeholder="C:\Users\You\Pictures">
         <button id="scanBtn">Scan</button>
       </div>
       <p id="status" class="status"></p>
-    </section>
 
-    <section class="panel">
-      <div class="row between">
+      <div class="row between index-head">
         <strong>Indexing</strong>
         <div class="row">
           <button id="startBtn" class="secondary">Start</button>
@@ -34,17 +56,7 @@
       <div class="bar"><div id="barFill"></div></div>
       <p id="indexStatus" class="status"></p>
       <p id="ocrStatus" class="status"></p>
-    </section>
-
-    <section class="panel">
-      <div class="row filters">
-        <button class="chip active" data-type="">All</button>
-        <button class="chip" data-type="image">Images</button>
-        <button class="chip" data-type="pdf">PDFs</button>
-        <button class="chip" data-type="document">Documents</button>
-      </div>
-      <div id="results" class="grid"></div>
-    </section>
+    </details>
   </main>
 
   <dialog id="textDialog">

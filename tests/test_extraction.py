@@ -70,6 +70,17 @@ def text_image(text, size=(900, 220)):
     return img, font_path
 
 
+class EnvironmentTests(unittest.TestCase):
+    def test_required_packages_are_installed(self):
+        import importlib.util
+
+        for name in ("PIL", "pypdfium2"):
+            self.assertIsNotNone(
+                importlib.util.find_spec(name),
+                f"{name} is missing. Activate the venv (.venv\\Scripts\\activate) and run: pip install -r requirements.txt",
+            )
+
+
 class ExtractorTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -127,6 +138,16 @@ class ExtractorTests(unittest.TestCase):
             self.skipTest("Tesseract or a TrueType font is not available")
         img.save(self.dir / "r.png")
         ex = extractors.extract(str(self.dir / "r.png"), "image", ".png", engine)
+        self.assertIn("NIMCET", ex.text.upper())
+
+    def test_real_rapidocr_reads_an_image(self):
+        engine = ocr._load_rapidocr()
+        img, font = text_image("NIMCET Maths")
+        if engine is None or font is None:
+            self.skipTest("RapidOCR or a TrueType font is not available")
+        img.save(self.dir / "r.png")
+        ex = extractors.extract(str(self.dir / "r.png"), "image", ".png", engine)
+        print(f"\n    RapidOCR read: {ex.text!r}")
         self.assertIn("NIMCET", ex.text.upper())
 
     def test_real_tesseract_reads_a_scanned_pdf(self):

@@ -1,13 +1,15 @@
 const $ = (id) => document.getElementById(id);
-const folderInput = $("folder");
-const scanBtn = $("scanBtn");
-const statusEl = $("status");
-const resultsEl = $("results");
+const PAGE = 20;
+const MARK_START = "\x02";
+const MARK_END = "\x03";
+const STATUS_LABEL = { done: "text ready", pending: "waiting", failed: "failed", needs_ocr: "needs OCR", skipped: "skipped" };
+
 let activeType = "";
+let searchSeq = 0;      // ignore answers to outdated searches
+let shown = 0;
+let debounce = null;
 let pollTimer = null;
 let wasRunning = false;
-
-const STATUS_LABEL = { done: "text ready", pending: "waiting", failed: "failed", needs_ocr: "needs OCR", skipped: "skipped" };
 
 async function api(path, options) {
   const res = await fetch(path, options);
@@ -16,88 +18,156 @@ async function api(path, options) {
   return data;
 }
 
-function setStatus(msg, isError = false) {
-  statusEl.textContent = msg;
-  statusEl.className = "status" + (isError ? " error" : "");
-}
-
 function formatSize(bytes) {
   if (bytes < 1024) return bytes + " B";
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
   return (bytes / 1024 / 1024).toFixed(1) + " MB";
 }
 
-function renderFiles(files, total) {
-  resultsEl.replaceChildren();
-  if (!files.length) {
-    resultsEl.textContent = "No files to show yet. Scan a folder first.";
-    return;
-  }
-  for (const f of files) {
-    const card = document.createElement("div");
-    card.className = "card";
-    card.title = f.path;
-
-    const thumb = document.createElement("div");
-    thumb.className = "thumb";
-    if (f.type === "image") {
-      const img = document.createElement("img");
-      img.loading = "lazy";
-      img.src = "/api/preview?path=" + encodeURIComponent(f.path);
-      img.alt = f.name;
-      thumb.appendChild(img);
+// Put text into an element, turning the server's match markers into <mark>. No innerHTML.
+function setMarked(el, text) {
+  el.replaceChildren();
+  let inMark = false;
+  let buf = "";
+  const flush = () => {
+    if (!buf) return;
+    if (inMark) {
+      const m = document.createElement("mark");
+      m.textContent = buf;
+      el.appendChild(m);
     } else {
-      thumb.textContent = f.ext.replace(".", "").toUpperCase();
+      el.appendChild(document.createTextNode(buf));
     }
-
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    const name = document.createElement("div");
-    name.className = "name";
-    name.textContent = f.name;
-    const sub = document.createElement("div");
-    sub.className = "sub";
-    sub.append(`${formatSize(f.size)} · ${f.modified.slice(0, 10)}`);
-    const badge = document.createElement("span");
-    badge.className = "badge " + f.status;
-    badge.textContent = STATUS_LABEL[f.status] || f.status;
-    sub.appendChild(badge);
-
-    const textBtn = document.createElement("button");
-    textBtn.className = "mini";
-    textBtn.textContent = "Text";
-    textBtn.addEventListener("click", (e) => {
-      e.stopPropagation();
-      showText(f);
-    });
-
-    meta.append(name, sub, textBtn);
-    card.append(thumb, meta);
-    card.addEventListener("click", () => openFile(f.path));
-    resultsEl.appendChild(card);
+    buf = "";
+  };
+  for (const ch of text) {
+    if (ch === MARK_START) { flush(); inMark = true; }
+    else if (ch === MARK_END) { flush(); inMark = false; }
+    else buf += ch;
   }
-  if (total > files.length) {
-    const more = document.createElement("p");
-    more.className = "more";
-    more.style.gridColumn = "1 / -1";
-    more.textContent = `Showing the newest ${files.length} of ${total} files. Search arrives in the next milestone.`;
-    resultsEl.appendChild(more);
-  }
+  flush();
 }
 
-async function loadFiles() {
-  const q = activeType ? "&type=" + activeType : "";
-  const data = await api("/api/files?limit=300" + q);
-  renderFiles(data.files, data.count);
-  return data;
+function typeLabel(f) {
+  return { image: "Image", pdf: "PDF", document: "Document" }[f.type] || f.type;
 }
 
-async function openFile(path) {
+async function act(path, label) {
   try {
-    await api("/api/open?path=" + encodeURIComponent(path), { method: "POST" });
+    await api(path, { method: "POST" });
   } catch (e) {
-    setStatus(e.message, true);
+    $("resultInfo").textContent = `${label}: ${e.message}`;
+    $("resultInfo").className = "status error";
   }
+}
+
+function buildResult(f) {
+  const item = document.createElement("article");
+  item.className = "result";
+
+  const thumb = document.createElement("div");
+  thumb.className = "thumb";
+  const fallback = () => { thumb.textContent = f.ext.replace(".", "").toUpperCase(); };
+  if (f.type === "image") {
+    const img = document.createElement("img");
+    img.loading = "lazy";
+    img.alt = "";
+    img.src = "/api/thumb?path=" + encodeURIComponent(f.path);
+    img.addEventListener("error", () => { img.remove(); fallback(); });
+    thumb.appendChild(img);
+  } else {
+    fallback();
+  }
+
+  const body = document.createElement("div");
+  body.className = "body";
+  const title = document.createElement("div");
+  title.className = "title";
+  title.title = "Open original";
+  setMarked(title, f.name_hl);
+  title.addEventListener("click", () => act("/api/open?path=" + encodeURIComponent(f.path), "Open"));
+  const badge = document.createElement("span");
+  badge.className = "badge " + f.status;
+  badge.textContent = STATUS_LABEL[f.status] || f.status;
+  title.appendChild(badge);
+
+  const path = document.createElement("div");
+  path.className = "path";
+  path.textContent = f.path;
+  path.title = f.path;
+  const sub = document.createElement("div");
+  sub.className = "sub";
+  sub.textContent = `${typeLabel(f)} · ${formatSize(f.size)} · ${f.modified.slice(0, 10)}`;
+  body.append(title, path, sub);
+  if (f.snippet) {
+    const snip = document.createElement("div");
+    snip.className = "snippet";
+    setMarked(snip, f.snippet);
+    body.appendChild(snip);
+  }
+
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  const mk = (label, fn) => {
+    const b = document.createElement("button");
+    b.className = "secondary";
+    b.textContent = label;
+    b.addEventListener("click", fn);
+    return b;
+  };
+  actions.append(
+    mk("Open", () => act("/api/open?path=" + encodeURIComponent(f.path), "Open")),
+    mk("Show in folder", () => act("/api/reveal?path=" + encodeURIComponent(f.path), "Show in folder")),
+    mk("Text", () => showText(f))
+  );
+
+  item.append(thumb, body, actions);
+  return item;
+}
+
+function searchUrl(offset) {
+  const p = new URLSearchParams({ q: $("q").value, sort: $("sort").value, limit: PAGE, offset });
+  if (activeType) p.set("type", activeType);
+  if ($("dateFrom").value) p.set("date_from", $("dateFrom").value);
+  if ($("dateTo").value) p.set("date_to", $("dateTo").value);
+  return "/api/search?" + p.toString();
+}
+
+async function runSearch(append = false) {
+  const seq = ++searchSeq;
+  const info = $("resultInfo");
+  try {
+    const data = await api(searchUrl(append ? shown : 0));
+    if (seq !== searchSeq) return data; // a newer search already started
+    const list = $("results");
+    if (!append) { list.replaceChildren(); shown = 0; }
+    for (const f of data.results) list.appendChild(buildResult(f));
+    shown += data.results.length;
+    $("moreBtn").hidden = shown >= data.total;
+
+    const hasQuery = $("q").value.trim() !== "";
+    let msg;
+    if (data.total === 0) {
+      msg = hasQuery ? "No results." : "Nothing indexed yet. Open Folders and indexing below and scan a folder.";
+    } else if (hasQuery) {
+      msg = `${data.total} result${data.total === 1 ? "" : "s"}`;
+    } else {
+      msg = `${data.total} files, newest first. Type above to search.`;
+    }
+    if (data.pending > 0 && data.total >= 0 && (hasQuery || data.total === 0)) {
+      msg += ` ${data.pending} file${data.pending === 1 ? " is" : "s are"} still being indexed, so more results may appear.`;
+    }
+    info.textContent = msg;
+    info.className = "status";
+    return data;
+  } catch (e) {
+    if (seq === searchSeq) { info.textContent = e.message; info.className = "status error"; }
+  }
+}
+
+function scheduleSearch() {
+  clearTimeout(debounce);
+  debounce = setTimeout(() => runSearch(false), 220);
 }
 
 async function showText(f) {
@@ -125,6 +195,13 @@ async function showText(f) {
   }
 }
 
+/* ---------- scanning and indexing ---------- */
+
+function setScanStatus(msg, isError = false) {
+  $("status").textContent = msg;
+  $("status").className = "status" + (isError ? " error" : "");
+}
+
 function renderIndex(s) {
   const c = s.counts;
   const processed = c.done + c.failed + c.needs_ocr + c.skipped;
@@ -147,11 +224,8 @@ async function refreshIndex() {
   try {
     const s = await api("/api/index/status");
     renderIndex(s);
-    if (s.running) {
-      pollTimer = setTimeout(refreshIndex, 1500);
-    } else if (wasRunning) {
-      await loadFiles(); // show final statuses
-    }
+    if (s.running) pollTimer = setTimeout(refreshIndex, 1500);
+    else if (wasRunning) await runSearch(false); // indexing finished: show final results
     wasRunning = s.running;
   } catch (e) {
     $("indexStatus").textContent = e.message;
@@ -159,54 +233,69 @@ async function refreshIndex() {
 }
 
 async function indexAction(path) {
-  try {
-    await api(path, { method: "POST" });
-  } catch (e) {
-    setStatus(e.message, true);
-  }
+  try { await api(path, { method: "POST" }); } catch (e) { setScanStatus(e.message, true); }
   wasRunning = true;
   setTimeout(refreshIndex, 300);
 }
 
-scanBtn.addEventListener("click", async () => {
-  const folder = folderInput.value.trim();
-  if (!folder) return setStatus("Enter a folder path.", true);
-  scanBtn.disabled = true;
-  setStatus("Scanning...");
+$("scanBtn").addEventListener("click", async () => {
+  const folder = $("folder").value.trim();
+  if (!folder) return setScanStatus("Enter a folder path.", true);
+  $("scanBtn").disabled = true;
+  setScanStatus("Scanning...");
   try {
-    const data = await api("/api/scan", {
+    const d = await api("/api/scan", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ folder }),
     });
-    setStatus(
-      `${data.count} files in this folder: ${data.added} new, ${data.updated} changed, ${data.removed} removed, ${data.unchanged} unchanged.` +
-        (data.skipped_folders ? ` ${data.skipped_folders} folder(s) could not be read and were left as they were.` : "")
+    setScanStatus(
+      `${d.count} files in this folder: ${d.added} new, ${d.updated} changed, ${d.removed} removed, ${d.unchanged} unchanged.` +
+        (d.skipped_folders ? ` ${d.skipped_folders} folder(s) could not be read and were left as they were.` : "")
     );
-    await loadFiles();
+    await runSearch(false);
     wasRunning = true;
     refreshIndex();
   } catch (e) {
-    setStatus(e.message, true);
+    setScanStatus(e.message, true);
   } finally {
-    scanBtn.disabled = false;
+    $("scanBtn").disabled = false;
   }
 });
 
-folderInput.addEventListener("keydown", (e) => { if (e.key === "Enter") scanBtn.click(); });
+/* ---------- wiring ---------- */
+
+$("folder").addEventListener("keydown", (e) => { if (e.key === "Enter") $("scanBtn").click(); });
 $("startBtn").addEventListener("click", () => indexAction("/api/index/start"));
 $("pauseBtn").addEventListener("click", () => indexAction("/api/index/pause"));
 $("retryBtn").addEventListener("click", () => indexAction("/api/index/retry"));
 $("dlgClose").addEventListener("click", () => $("textDialog").close());
-
+$("moreBtn").addEventListener("click", () => runSearch(true));
+$("q").addEventListener("input", scheduleSearch);
+$("q").addEventListener("keydown", (e) => { if (e.key === "Enter") { clearTimeout(debounce); runSearch(false); } });
+for (const id of ["dateFrom", "dateTo", "sort"]) $(id).addEventListener("change", () => runSearch(false));
+$("clearBtn").addEventListener("click", () => {
+  $("q").value = ""; $("dateFrom").value = ""; $("dateTo").value = ""; $("sort").value = "relevance";
+  document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c.dataset.type === ""));
+  activeType = "";
+  $("q").focus();
+  runSearch(false);
+});
 document.querySelectorAll(".chip").forEach((chip) => {
-  chip.addEventListener("click", async () => {
+  chip.addEventListener("click", () => {
     document.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
     chip.classList.add("active");
     activeType = chip.dataset.type;
-    await loadFiles();
+    runSearch(false);
   });
 });
 
-loadFiles().then((data) => { if (data.root && !folderInput.value) folderInput.value = data.root; });
-refreshIndex();
+(async () => {
+  try {
+    const roots = await api("/api/files?limit=1");
+    if (roots.root && !$("folder").value) $("folder").value = roots.root;
+  } catch (e) { /* the search below shows any error */ }
+  const data = await runSearch(false);
+  if (data && data.total > 0) $("manage").open = false; // already indexed: keep the search front and centre
+  refreshIndex();
+})();
