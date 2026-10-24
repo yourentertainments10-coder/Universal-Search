@@ -83,8 +83,8 @@ scanBtn.addEventListener("click", async () => {
     });
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "Scan failed");
-    setStatus(`Found ${data.count} supported files.`);
-    await loadFiles();
+    setStatus(`${data.count} files in this folder: ${data.added} new, ${data.updated} changed, ${data.removed} removed, ${data.unchanged} unchanged.` + (data.skipped_folders ? ` ${data.skipped_folders} folder(s) could not be read and were left as they were.` : ""));
+    await loadFiles().then((data) => { if (data.root && !folderInput.value) folderInput.value = data.root; });
   } catch (e) {
     setStatus(e.message, true);
   } finally {
@@ -99,8 +99,8 @@ document.querySelectorAll(".chip").forEach((chip) => {
     document.querySelectorAll(".chip").forEach((c) => c.classList.remove("active"));
     chip.classList.add("active");
     activeType = chip.dataset.type;
-    await loadFiles();
+    await loadFiles().then((data) => { if (data.root && !folderInput.value) folderInput.value = data.root; });
   });
 });
 
-loadFiles();
+loadFiles().then((data) => { if (data.root && !folderInput.value) folderInput.value = data.root; });

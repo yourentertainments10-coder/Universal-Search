@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, field, asdict
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +22,11 @@ def file_type(ext: str) -> str:
     return "document"
 
 
+def path_key(p: str | Path) -> str:
+    """Canonical form used to compare paths (case-insensitive on Windows)."""
+    return os.path.normcase(os.path.abspath(str(p)))
+
+
 @dataclass
 class FileInfo:
     path: str
@@ -29,20 +34,34 @@ class FileInfo:
     ext: str
     type: str
     size: int
+    mtime_ns: int
     modified: str  # ISO 8601
 
     def to_dict(self) -> dict:
         return asdict(self)
 
 
-def scan_folder(root: str | Path) -> list[FileInfo]:
+@dataclass
+class ScanResult:
+    root: str
+    files: list[FileInfo] = field(default_factory=list)
+    # Folders the scan could not read. Files under them must NOT be treated as deleted.
+    failed_dirs: list[str] = field(default_factory=list)
+
+
+def scan_folder(root: str | Path) -> ScanResult:
     """Recursively scan `root` and return supported files. Never modifies files."""
     root = Path(root).expanduser().resolve()
     if not root.is_dir():
         raise NotADirectoryError(f"Not a folder: {root}")
 
-    results: list[FileInfo] = []
-    for dirpath, dirnames, filenames in os.walk(root):
+    result = ScanResult(root=str(root))
+
+    def on_error(err: OSError) -> None:
+        if err.filename:
+            result.failed_dirs.append(str(err.filename))
+
+    for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
         # skip hidden folders
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         for fname in filenames:
@@ -54,15 +73,16 @@ def scan_folder(root: str | Path) -> list[FileInfo]:
                 st = full.stat()
             except OSError:
                 continue  # unreadable or deleted mid-scan
-            results.append(
+            result.files.append(
                 FileInfo(
                     path=str(full),
                     name=fname,
                     ext=ext,
                     type=file_type(ext),
                     size=st.st_size,
+                    mtime_ns=st.st_mtime_ns,
                     modified=datetime.fromtimestamp(st.st_mtime).isoformat(timespec="seconds"),
                 )
             )
-    results.sort(key=lambda f: f.modified, reverse=True)
-    return results
+    result.files.sort(key=lambda f: f.modified, reverse=True)
+    return result

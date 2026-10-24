@@ -6,3 +6,6 @@ venv/
 *.sqlite3
 .env
 .vscode/
+
+# local search index (never commit personal data)
+data/
