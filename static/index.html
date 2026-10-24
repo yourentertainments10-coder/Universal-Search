@@ -23,6 +23,20 @@
     </section>
 
     <section class="panel">
+      <div class="row between">
+        <strong>Indexing</strong>
+        <div class="row">
+          <button id="startBtn" class="secondary">Start</button>
+          <button id="pauseBtn" class="secondary">Pause</button>
+          <button id="retryBtn" class="secondary">Retry failed</button>
+        </div>
+      </div>
+      <div class="bar"><div id="barFill"></div></div>
+      <p id="indexStatus" class="status"></p>
+      <p id="ocrStatus" class="status"></p>
+    </section>
+
+    <section class="panel">
       <div class="row filters">
         <button class="chip active" data-type="">All</button>
         <button class="chip" data-type="image">Images</button>
@@ -32,6 +46,15 @@
       <div id="results" class="grid"></div>
     </section>
   </main>
+
+  <dialog id="textDialog">
+    <div class="dialog-head">
+      <strong id="dlgTitle"></strong>
+      <button id="dlgClose" class="secondary">Close</button>
+    </div>
+    <p id="dlgMeta" class="status"></p>
+    <pre id="dlgText"></pre>
+  </dialog>
 
   <script src="app.js"></script>
 </body>

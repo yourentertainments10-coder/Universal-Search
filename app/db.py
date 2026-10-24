@@ -37,6 +37,20 @@ MIGRATIONS = [
         last_scan TEXT NOT NULL
     );
     """,
+    # 2: extracted text (Milestone 3). Rows disappear with their file.
+    """
+    CREATE TABLE content (
+        file_id      INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        text         TEXT NOT NULL DEFAULT '',
+        method       TEXT NOT NULL DEFAULT '',
+        engine       TEXT,
+        pages        INTEGER,
+        note         TEXT,
+        error        TEXT,
+        extracted_at TEXT NOT NULL
+    );
+    CREATE INDEX idx_files_status ON files(status);
+    """,
 ]
 
 
@@ -58,30 +72,60 @@ def migrate(conn: sqlite3.Connection) -> None:
 def connect() -> Iterator[sqlite3.Connection]:
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
     try:
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
         migrate(conn)
         yield conn
     finally:
         conn.close()
 
 
-def list_files(conn: sqlite3.Connection, type: str | None = None) -> list[dict]:
-    sql = "SELECT path, name, ext, type, size, modified FROM files"
-    args: tuple = ()
+def list_files(conn: sqlite3.Connection, type: str | None = None, limit: int | None = None) -> list[dict]:
+    sql = "SELECT path, name, ext, type, size, modified, status FROM files"
+    args: list = []
     if type:
         sql += " WHERE type = ?"
-        args = (type,)
+        args.append(type)
     sql += " ORDER BY modified DESC, name"
+    if limit:
+        sql += " LIMIT ?"
+        args.append(limit)
     return [dict(r) for r in conn.execute(sql, args)]
+
+
+def count_files(conn: sqlite3.Connection, type: str | None = None) -> int:
+    if type:
+        return conn.execute("SELECT COUNT(*) FROM files WHERE type = ?", (type,)).fetchone()[0]
+    return conn.execute("SELECT COUNT(*) FROM files").fetchone()[0]
+
+
+def status_counts(conn: sqlite3.Connection) -> dict:
+    counts = {"pending": 0, "done": 0, "failed": 0, "needs_ocr": 0, "skipped": 0}
+    for r in conn.execute("SELECT status, COUNT(*) AS n FROM files GROUP BY status"):
+        counts[r["status"]] = r["n"]
+    return counts
 
 
 def find_file(conn: sqlite3.Connection, path: str) -> sqlite3.Row | None:
     return conn.execute(
-        "SELECT path, name, ext, type FROM files WHERE path_key = ?", (path_key(path),)
+        "SELECT id, path, name, ext, type, status FROM files WHERE path_key = ?", (path_key(path),)
     ).fetchone()
+
+
+def get_content(conn: sqlite3.Connection, file_id: int, max_chars: int) -> dict | None:
+    r = conn.execute(
+        "SELECT text, method, engine, pages, note, error, extracted_at FROM content WHERE file_id = ?",
+        (file_id,),
+    ).fetchone()
+    if r is None:
+        return None
+    d = dict(r)
+    d["length"] = len(d["text"])
+    d["text"] = d["text"][:max_chars]
+    return d
 
 
 def last_root(conn: sqlite3.Connection) -> str | None:

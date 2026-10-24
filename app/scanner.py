@@ -12,6 +12,12 @@ DOC_EXT = {".txt", ".md", ".docx"}
 
 SUPPORTED = IMAGE_EXT | PDF_EXT | DOC_EXT
 
+# Folders that hold program files, not personal files. Indexing them wastes hours of OCR.
+SKIP_DIRS = {
+    "node_modules", "__pycache__", "site-packages", "venv", ".venv",
+    "$recycle.bin", "system volume information",
+}
+
 
 def file_type(ext: str) -> str:
     ext = ext.lower()
@@ -62,8 +68,14 @@ def scan_folder(root: str | Path) -> ScanResult:
             result.failed_dirs.append(str(err.filename))
 
     for dirpath, dirnames, filenames in os.walk(root, onerror=on_error):
-        # skip hidden folders
-        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        # a folder with pyvenv.cfg is a Python virtual environment: skip all of it
+        if "pyvenv.cfg" in filenames:
+            dirnames[:] = []
+            continue
+        # skip hidden folders and known program/junk folders
+        dirnames[:] = [
+            d for d in dirnames if not d.startswith(".") and d.lower() not in SKIP_DIRS
+        ]
         for fname in filenames:
             ext = Path(fname).suffix.lower()
             if ext not in SUPPORTED:

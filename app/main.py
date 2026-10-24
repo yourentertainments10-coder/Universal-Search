@@ -2,6 +2,7 @@
 
 Run bound to 127.0.0.1 only; nothing leaves the machine.
 Milestone 2: files are stored in SQLite and rescans are incremental.
+Milestone 3: background text extraction (text, DOCX, PDF) and OCR (images, scanned PDFs).
 """
 from __future__ import annotations
 
@@ -17,11 +18,13 @@ from pydantic import BaseModel
 from . import db
 from .indexer import sync_folder
 from .scanner import scan_folder
+from .worker import IndexWorker, retry_failed
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = FastAPI(title="AI Universal Personal Search")
+worker = IndexWorker()
 
 
 class ScanRequest(BaseModel):
@@ -44,15 +47,55 @@ def api_scan(req: ScanRequest):
     except (NotADirectoryError, OSError) as e:
         raise HTTPException(status_code=400, detail=str(e))
     with db.connect() as conn:
-        return sync_folder(conn, result)
+        summary = sync_folder(conn, result)
+    worker.start()  # extract text from new and changed files in the background
+    return summary
 
 
 @app.get("/api/files")
-def api_files(type: str | None = Query(None, pattern="^(image|pdf|document)$")):
+def api_files(
+    type: str | None = Query(None, pattern="^(image|pdf|document)$"),
+    limit: int = Query(300, ge=1, le=2000),
+):
     with db.connect() as conn:
-        files = db.list_files(conn, type)
+        files = db.list_files(conn, type, limit)
+        total = db.count_files(conn, type)
         root = db.last_root(conn)
-    return {"root": root, "count": len(files), "files": files}
+    return {"root": root, "count": total, "files": files}
+
+
+@app.get("/api/index/status")
+def api_index_status():
+    return worker.status()
+
+
+@app.post("/api/index/start")
+def api_index_start():
+    worker.start()
+    return worker.status()
+
+
+@app.post("/api/index/pause")
+def api_index_pause():
+    worker.pause()
+    return worker.status()
+
+
+@app.post("/api/index/retry")
+def api_index_retry():
+    """Re-queue failed files and files that were waiting for an OCR engine."""
+    with db.connect() as conn:
+        n = retry_failed(conn)
+    worker.start()
+    return {"requeued": n}
+
+
+@app.get("/api/content")
+def api_content(path: str, max_chars: int = Query(20000, ge=100, le=200000)):
+    row = _indexed_file(path)
+    with db.connect() as conn:
+        content = db.get_content(conn, row["id"], max_chars)
+    return {"name": row["name"], "status": row["status"], "content": content}
 
 
 @app.get("/api/preview")
