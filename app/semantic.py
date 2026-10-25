@@ -63,9 +63,14 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
-MIN_SIMILARITY = _env_float("SEMANTIC_MIN_SIMILARITY", 0.20)  # CLIP text-image cosine floor
+# Calibrated on 11 real photos with the real model: the strongest wrong match scored 0.217 and the
+# weakest right match 0.245, so the floor sits between them. Re-check with `python -m app.semantic check`.
+MIN_SIMILARITY = _env_float("SEMANTIC_MIN_SIMILARITY", 0.23)  # CLIP text-image cosine floor
 MARGIN = _env_float("SEMANTIC_MARGIN", 0.07)                   # keep hits within this of the best one
 TOP_K = int(_env_float("SEMANTIC_TOP_K", 60))
+# Screenshots are skipped by default: they are slow to process, give flat, junky similarity scores, and
+# their text is already searchable through OCR. Set SEMANTIC_INCLUDE_SCREENSHOTS=1 to embed them too.
+INCLUDE_SCREENSHOTS = os.environ.get("SEMANTIC_INCLUDE_SCREENSHOTS", "").strip().lower() in ("1", "true", "yes")
 CONTEXT = 77                                                   # CLIP text length
 BOS_DEFAULT, EOS_DEFAULT = 49406, 49407
 CLIP_MEAN = (0.48145466, 0.4578275, 0.40821073)
@@ -369,12 +374,25 @@ def store_embedding(conn, file_id: int, model: str, mtime_ns: int, vec=None, err
         )
 
 
+_IS_SCREENSHOT = "(lower({a}name) LIKE '%screenshot%' OR lower({a}name) LIKE '%screen shot%')"
+
+
+def _skip_screenshots_clause(alias: str = "") -> str:
+    """SQL to append to a WHERE clause so screenshots are left out (unless they are switched on)."""
+    if INCLUDE_SCREENSHOTS:
+        return ""
+    return " AND NOT " + _IS_SCREENSHOT.format(a=f"{alias}." if alias else "")
+
+
 def counts(conn, model: str) -> dict:
-    images = conn.execute("SELECT COUNT(*) FROM files WHERE type = 'image'").fetchone()[0]
+    images = conn.execute("SELECT COUNT(*) FROM files WHERE type = 'image'" + _skip_screenshots_clause()).fetchone()[0]
+    skipped = 0 if INCLUDE_SCREENSHOTS else conn.execute(
+        "SELECT COUNT(*) FROM files WHERE type = 'image' AND " + _IS_SCREENSHOT.format(a="")
+    ).fetchone()[0]
     base = "SELECT COUNT(*) FROM embeddings e JOIN files f ON f.id = e.file_id WHERE e.model = ? AND e.mtime_ns = f.mtime_ns"
     embedded = conn.execute(base + " AND e.vector IS NOT NULL", (model,)).fetchone()[0]
     failed = conn.execute(base + " AND e.vector IS NULL", (model,)).fetchone()[0]
-    return {"images": images, "embedded": embedded, "failed": failed}
+    return {"images": images, "embedded": embedded, "failed": failed, "skipped": skipped}
 
 
 _cache: dict = {"key": None, "ids": None, "mat": None}
@@ -466,7 +484,8 @@ def embed_pending(stop: threading.Event | None = None, on_file=None, embedder=No
             rows = conn.execute(
                 """SELECT f.id, f.path, f.ext, f.mtime_ns FROM files f
                    LEFT JOIN embeddings e ON e.file_id = f.id AND e.model = ? AND e.mtime_ns = f.mtime_ns
-                   WHERE f.type = 'image' AND e.file_id IS NULL ORDER BY f.id LIMIT ?""",
+                   WHERE f.type = 'image' AND e.file_id IS NULL""" + _skip_screenshots_clause("f") + """
+                   ORDER BY f.id LIMIT ?""",
                 (embedder.model_id, BATCH),
             ).fetchall()
             if not rows:
@@ -646,33 +665,51 @@ def _cli_check(args) -> int:
 
     if args.folder:
         exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
-        files = [p for p in sorted(Path(args.folder).rglob("*")) if p.suffix.lower() in exts][: args.limit]
-        if not files:
-            print(f"\nNo images found in {args.folder}")
+        skip = [t.lower() for t in (args.exclude or [])]
+        found = [p for p in sorted(Path(args.folder).rglob("*"))
+                 if p.suffix.lower() in exts and not any(t in p.name.lower() for t in skip)]
+        if not found:
+            print(f"\nNo images found in {args.folder}" + (" (after --exclude)" if skip else ""))
             return 0
-        print(f"\nEmbedding {len(files)} images from {args.folder} ...")
-        vecs, names, t0 = [], [], time.time()
+        step = max(1, len(found) // max(args.limit, 1))
+        files = found[::step][: args.limit]  # spread evenly instead of taking only the first few
+        print(f"\nEmbedding {len(files)} of {len(found)} images from {args.folder} ...")
+        vecs, names, t_open, t_embed = [], [], 0.0, 0.0
         for p in files:
             try:
+                t0 = time.time()
                 with Image.open(p) as img:
                     img.draft("RGB", (448, 448))
-                    vecs.append(emb.embed_image(_prepare_image(img)))
+                    img = _prepare_image(img)
+                t1 = time.time()
+                vecs.append(emb.embed_image(img))
+                t_embed += time.time() - t1
+                t_open += t1 - t0
                 names.append(p.name)
             except Exception as e:
                 print(f"  skipped {p.name}: {e}")
-        dt = time.time() - t0
-        per = dt / max(len(vecs), 1)
-        print(f"  {per * 1000:.0f} ms per image  ->  about {per * 1000 / 60:.1f} minutes per 1000 images   memory {_rss_mb() or float('nan'):.0f} MB")
+        n = max(len(vecs), 1)
+        per = (t_open + t_embed) / n
+        print(f"  {per * 1000:.0f} ms per image (opening/decoding {t_open / n * 1000:.0f} ms + model {t_embed / n * 1000:.0f} ms)"
+              f"  ->  about {per * 1000 / 60:.1f} minutes per 1000 images   memory {_rss_mb() or float('nan'):.0f} MB")
         np = _np()
         mat = np.vstack(vecs)
         for q in args.query or ["a photo of people", "a screenshot", "a landscape"]:
             scores = mat @ emb.embed_text(q)
-            top = np.argsort(-scores)[:5]
-            print(f'\n  "{q}"')
-            for i in top:
-                mark = "*" if scores[i] >= MIN_SIMILARITY else " "
+            order = np.argsort(-scores)
+            best = float(scores[order[0]])
+            cutoff = max(MIN_SIMILARITY, best - MARGIN) if best >= MIN_SIMILARITY else None
+            shown = 0 if cutoff is None else min(int((scores >= cutoff).sum()), TOP_K)
+            note = f"cutoff {cutoff:.3f}" if cutoff is not None else f"nothing shown (best is below MIN_SIMILARITY {MIN_SIMILARITY})"
+            median, mean, std = float(np.median(scores)), float(scores.mean()), float(scores.std())
+            print(f'\n  "{q}"   best {best:.3f}   {note}   ->  {shown} of {len(names)} images would be shown')
+            print(f"     all {len(names)} scores: median {median:.3f}, mean {mean:.3f}, spread {std:.3f}, "
+                  f"best is {(best - mean) / std if std else 0:.1f} spreads above the mean")
+            for i in order[: max(8, min(shown, 15))]:
+                mark = "*" if cutoff is not None and scores[i] >= cutoff else " "
                 print(f"   {mark} {scores[i]:.3f}  {names[i]}")
-        print("\n  (* = above MIN_SIMILARITY and would be shown). Adjust SEMANTIC_MIN_SIMILARITY / SEMANTIC_MARGIN if needed.")
+        print("\n  (* = would be shown.) Too many unrelated photos: raise SEMANTIC_MIN_SIMILARITY or lower SEMANTIC_MARGIN."
+              "\n  Good photos missing: lower SEMANTIC_MIN_SIMILARITY or raise SEMANTIC_MARGIN.")
     return 0
 
 
@@ -684,7 +721,8 @@ def main(argv=None) -> int:
     d.set_defaults(fn=_cli_download)
     c = sub.add_parser("check", help="sanity-check accuracy, speed and memory on this computer")
     c.add_argument("--folder", help="also embed up to --limit images from this folder and test queries on them")
-    c.add_argument("--limit", type=int, default=40)
+    c.add_argument("--limit", type=int, default=40, help="how many images to sample (spread evenly through the folder)")
+    c.add_argument("--exclude", action="append", help="skip file names containing this text, e.g. --exclude screenshot (repeatable)")
     c.add_argument("--query", action="append", help="a text query to try (repeatable)")
     c.set_defaults(fn=_cli_check)
     args = parser.parse_args(argv)

@@ -318,6 +318,7 @@ function renderSemantic(s) {
     else if (s.running && s.current) text += ` Working on ${s.current}`;
     else if (s.running) text += " Waiting for text indexing to finish first.";
     else if (settled < s.images) text += " Paused.";
+    if (s.skipped) text += ` ${s.skipped} screenshot${s.skipped === 1 ? "" : "s"} skipped (search their text instead).`;
   }
   if (s.last_error) text += ` Stopped by an error: ${s.last_error}`;
   $("semStatus").textContent = text;

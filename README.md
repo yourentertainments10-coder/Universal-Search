@@ -1,4 +1,3 @@
-# .\.venv\Scripts\Activate.ps1 
 # AI Universal Personal Search
 
 Local-first, privacy-focused search across photos, screenshots, PDFs and documents.
@@ -56,8 +55,11 @@ python -m app.semantic check --folder D:\Photos --query "a dog" --query "people 
 ```
 This prints a sanity check, milliseconds per image, memory use, and the best matches with their scores.
 
-Tuning (environment variables): `SEMANTIC_MIN_SIMILARITY` (default 0.20, raise it if unrelated photos appear), `SEMANTIC_MARGIN` (0.07, how close to the best match a result must be), `SEMANTIC_TOP_K` (60), `CLIP_THREADS`, `CLIP_VARIANT`.
-Limits: images only (not PDFs), English queries work best, and the default thresholds are starting values that have not yet been calibrated on real photos.
+Screenshots are skipped by default (they are slow, give junky scores, and their text is already searchable with OCR); set `SEMANTIC_INCLUDE_SCREENSHOTS=1` to include them.
+The defaults were calibrated on 11 labelled photos with the real model: right matches scored 0.245 to 0.31, the strongest wrong match 0.217, and about 82 ms per photo (roughly 1.4 minutes per 1000).
+
+Tuning (environment variables): `SEMANTIC_MIN_SIMILARITY` (default 0.23, raise it if unrelated photos appear), `SEMANTIC_MARGIN` (0.07, how close to the best match a result must be), `SEMANTIC_TOP_K` (60), `CLIP_THREADS`, `CLIP_VARIANT`.
+Limits: images only (not PDFs), English queries work best, and the thresholds come from a small test set, so re-check them on your own photos with `python -m app.semantic check`.
 
 ## Keeping the index healthy
 - **Folders:** the *Folders and indexing* section lists every scanned folder with its file count. **Rescan** refreshes one, **Rescan all** refreshes every reachable one, **Remove** forgets a folder (the files on disk are never touched).

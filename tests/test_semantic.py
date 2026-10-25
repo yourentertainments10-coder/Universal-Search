@@ -354,7 +354,7 @@ class EmbeddingStoreTests(Base):
             c = semantic.counts(conn, "fake-1")
             errors = {r["name"]: r["error"] for r in conn.execute(
                 "SELECT f.name, e.error FROM embeddings e JOIN files f ON f.id = e.file_id WHERE e.vector IS NULL")}
-        self.assertEqual(c, {"images": 6, "embedded": 4, "failed": 2})
+        self.assertEqual(c, {"images": 6, "embedded": 4, "failed": 2, "skipped": 0})
         self.assertIn("HEIC", errors["phone.heic"])
         self.assertTrue(errors["broken.png"])
 
@@ -437,6 +437,26 @@ class EmbeddingStoreTests(Base):
         stop.set()
         self.assertEqual(semantic.embed_pending(stop, embedder=FakeEmbedder()), {"embedded": 0, "failed": 0})
         self.assertTrue(w.stop_and_wait(1))
+
+    def test_screenshots_are_skipped_by_default(self):
+        self.image("Screenshot 2026-04-05 120000.png", "red")
+        self.image("my screen shot.png", "red")
+        self.scan()
+        self.assertEqual(self.embed(), {"embedded": 4, "failed": 2})  # same as without the screenshots
+        with db.connect() as conn:
+            c = semantic.counts(conn, "fake-1")
+        self.assertEqual((c["images"], c["skipped"], c["embedded"]), (6, 2, 4))
+        self.assertNotIn("Screenshot 2026-04-05 120000.png", [n for n, _ in self.hits("red")])
+
+    def test_screenshots_can_be_switched_on(self):
+        self.image("Screenshot 2026-04-05 120000.png", "red")
+        self.scan()
+        with mock.patch.object(semantic, "INCLUDE_SCREENSHOTS", True):
+            self.assertEqual(self.embed(), {"embedded": 5, "failed": 2})
+            with db.connect() as conn:
+                c = semantic.counts(conn, "fake-1")
+            self.assertEqual((c["images"], c["skipped"]), (7, 0))
+            self.assertIn("Screenshot 2026-04-05 120000.png", [n for n, _ in self.hits("red")])
 
     def test_worker_refuses_to_start_when_the_model_is_not_ready(self):
         w = semantic.SemanticWorker()
@@ -567,6 +587,11 @@ class ApiSearchTests(Base):
 
 
 class DependencyTests(unittest.TestCase):
+    @unittest.skipIf(os.environ.get("SEMANTIC_MIN_SIMILARITY"), "overridden by an environment variable")
+    def test_default_floor_sits_between_wrong_and_right_matches_measured_on_the_real_model(self):
+        # real CLIP ViT-B/32, 11 labelled photos: strongest wrong match 0.217, weakest right match 0.245
+        self.assertTrue(0.217 < semantic.MIN_SIMILARITY < 0.245, semantic.MIN_SIMILARITY)
+
     def test_semantic_module_imports_without_numpy_and_reports_missing_packages(self):
         self.assertIsInstance(semantic.missing_packages(), list)
         self.assertFalse(semantic.ready() and semantic.missing_packages())
