@@ -1,3 +1,4 @@
+# .\.venv\Scripts\Activate.ps1 
 # AI Universal Personal Search
 
 Local-first, privacy-focused search across photos, screenshots, PDFs and documents.
@@ -9,6 +10,7 @@ Nothing is uploaded; the server binds to `127.0.0.1` only.
    - **Milestone 3 done:** background text extraction (TXT, MD, DOCX, PDF) and OCR (images, scanned PDFs)
    - **Milestone 4 done:** ranked keyword and phrase search, type and date filters, snippets, thumbnails, open original / show in folder
    - **Milestone 5 done:** retries for temporary failures, index reset, folder management, missing-file handling, offline and privacy checks
+   - **Milestone 6 done:** search by meaning for images (local CLIP model), fused with keyword search
 2. Search engine: OCR, text extraction, SQLite FTS5, incremental indexing
 3. Semantic image search (local embeddings)
 4. Native Android app (Kotlin, Jetpack Compose)
@@ -37,6 +39,25 @@ Type in the search box; results update as you type.
 - **Open** opens the original file, **Show in folder** selects it in Explorer, **Text** shows what was extracted.
 - Files appear in search by name as soon as they are scanned, and by content once indexing has processed them.
 - Previews are cached in `data/thumbs/`; deleting `data/` resets everything (your original files are never touched).
+
+## Search by meaning (optional)
+Finds photos by what they show, even when no text is visible: `college farewell group photo`, `dog on a beach`, `whiteboard diagram`.
+It uses a local CLIP model (OpenAI CLIP ViT-B/32, MIT licence) run with ONNX Runtime. Photos and queries never leave this computer.
+
+1. Install the extra packages inside `.venv`: `pip install -r requirements-semantic.txt`
+2. Download the model once (about 606 MB; `CLIP_VARIANT=small` gives a 154 MB, faster, slightly less accurate version): press **Download model** in *Folders and indexing*, or run `python -m app.semantic download`. This is the only network use in the whole app, it needs your click, and it resumes if interrupted. The files are pinned to a fixed revision and stored in `data/models/`.
+3. Scan a folder. Images are embedded in the background after text indexing finishes (one image takes roughly 0.05 to 0.3 s on a typical PC). Progress and Pause are in the same panel.
+4. A *Search mode* menu appears next to the filters: **Text and meaning** (default, results from both are merged and files found both ways rank first), **Text only**, **Meaning only (images)**. Meaning matches show a `looks like it 0.27` badge.
+
+Measure it on your own photos before trusting it:
+```
+python -m app.semantic check
+python -m app.semantic check --folder D:\Photos --query "a dog" --query "people at a party"
+```
+This prints a sanity check, milliseconds per image, memory use, and the best matches with their scores.
+
+Tuning (environment variables): `SEMANTIC_MIN_SIMILARITY` (default 0.20, raise it if unrelated photos appear), `SEMANTIC_MARGIN` (0.07, how close to the best match a result must be), `SEMANTIC_TOP_K` (60), `CLIP_THREADS`, `CLIP_VARIANT`.
+Limits: images only (not PDFs), English queries work best, and the default thresholds are starting values that have not yet been calibrated on real photos.
 
 ## Keeping the index healthy
 - **Folders:** the *Folders and indexing* section lists every scanned folder with its file count. **Rescan** refreshes one, **Rescan all** refreshes every reachable one, **Remove** forgets a folder (the files on disk are never touched).

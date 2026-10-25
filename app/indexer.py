@@ -57,6 +57,7 @@ def sync_folder(conn: sqlite3.Connection, result: ScanResult) -> dict:
                     (f.size, f.mtime_ns, f.modified, now, row["id"]),
                 )
                 conn.execute("DELETE FROM content WHERE file_id = ?", (row["id"],))
+                conn.execute("DELETE FROM embeddings WHERE file_id = ?", (row["id"],))
                 updated += 1
             else:
                 unchanged += 1

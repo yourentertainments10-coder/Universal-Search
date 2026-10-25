@@ -1,0 +1,5 @@
+# Optional: semantic image search (find photos by what they show).
+# onnxruntime is probably already installed by the OCR requirements.
+numpy
+onnxruntime
+tokenizers

@@ -5,9 +5,11 @@ Milestone 2: files are stored in SQLite and rescans are incremental.
 Milestone 3: background text extraction (text, DOCX, PDF) and OCR (images, scanned PDFs).
 Milestone 4: ranked keyword/phrase search with filters, snippets, thumbnails.
 Milestone 5: retries, index reset, folder management, missing-file handling.
+Milestone 6: semantic image search (find photos by what they show), combined with keyword search.
 """
 from __future__ import annotations
 
+import logging
 import os
 import subprocess
 import sys
@@ -18,7 +20,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, search, thumbs
+from . import db, search, semantic, thumbs
 from .indexer import forget_folder, sync_folder
 from .scanner import scan_folder
 from .worker import IndexWorker, retry_failed
@@ -26,8 +28,10 @@ from .worker import IndexWorker, retry_failed
 BASE_DIR = Path(__file__).resolve().parent.parent
 STATIC_DIR = BASE_DIR / "static"
 
+log = logging.getLogger("universal_search")
 app = FastAPI(title="AI Universal Personal Search")
 worker = IndexWorker()
+semantic_worker = semantic.SemanticWorker(busy=lambda: worker.running)  # waits while OCR/text work runs
 
 
 class ScanRequest(BaseModel):
@@ -63,6 +67,7 @@ def _scan_and_sync(folder: str) -> dict:
 def api_scan(req: ScanRequest):
     summary = _scan_and_sync(req.folder)
     worker.start()  # extract text from new and changed files in the background
+    semantic_worker.start()  # image embeddings, only if the model is installed
     return summary
 
 
@@ -81,6 +86,7 @@ def api_rescan():
         except HTTPException as e:
             out.append({"root": r["path"], "error": e.detail})
     worker.start()
+    semantic_worker.start()
     return {"roots": out}
 
 
@@ -112,12 +118,68 @@ def api_search(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     status: str | None = Query(None, pattern="^(pending|done|failed|needs_ocr|skipped)$"),
+    mode: str = Query("auto", pattern="^(auto|keyword|semantic)$"),
 ):
+    """Keyword search, optionally combined with search by meaning (images that look like the query)."""
+    hits = None
+    semantic_error = None
+    if q.strip() and mode != "keyword":
+        if semantic.ready():
+            try:
+                with db.connect() as conn:
+                    hits = semantic.query_hits(conn, q)
+            except Exception as e:  # a broken model must never break normal search
+                semantic_error = f"{e.__class__.__name__}: {e}"  # not type(e): "type" is a parameter here
+                log.warning("Semantic search failed: %s", semantic_error)
+        if mode == "semantic" and hits is None:
+            raise HTTPException(
+                status_code=503,
+                detail=semantic_error or "Search by meaning is not set up yet. Open Folders and indexing and download the model.",
+            )
     try:
         with db.connect() as conn:
-            return search.run_search(conn, q, type, date_from, date_to, sort, limit, offset, status)
+            if hits or (mode == "semantic" and hits is not None):
+                result = search.run_hybrid_search(conn, q, hits, mode, type, date_from, date_to, sort, limit, offset, status)
+            else:
+                result = search.run_search(conn, q, type, date_from, date_to, sort, limit, offset, status)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    result["semantic_error"] = semantic_error
+    return result
+
+
+@app.get("/api/semantic/status")
+def api_semantic_status():
+    return semantic_worker.status()
+
+
+@app.post("/api/semantic/download")
+def api_semantic_download():
+    """Download the model once (the only time this app uses the network). Needs the user's click."""
+    semantic.downloader.start()
+    return semantic_worker.status()
+
+
+@app.post("/api/semantic/start")
+def api_semantic_start():
+    if not semantic.ready():
+        raise HTTPException(status_code=400, detail="Download the model and install the packages first.")
+    semantic_worker.start()
+    return semantic_worker.status()
+
+
+@app.post("/api/semantic/pause")
+def api_semantic_pause():
+    semantic_worker.pause()
+    return semantic_worker.status()
+
+
+@app.post("/api/semantic/retry")
+def api_semantic_retry():
+    with db.connect() as conn:
+        n = semantic.retry_failed(conn)
+    semantic_worker.start()
+    return {"requeued": n}
 
 
 @app.get("/api/files")
@@ -161,7 +223,7 @@ def api_index_retry():
 @app.post("/api/index/reset")
 def api_index_reset():
     """Delete the whole search index and all previews. Original files are never touched."""
-    if not worker.stop_and_wait(60):
+    if not (worker.stop_and_wait(60) and semantic_worker.stop_and_wait(60)):
         raise HTTPException(status_code=409, detail="Indexing is still stopping. Try again in a moment.")
     with db.connect() as conn:
         db.reset_index(conn)

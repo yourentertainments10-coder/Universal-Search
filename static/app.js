@@ -90,6 +90,13 @@ function buildResult(f) {
   badge.className = "badge " + f.status;
   badge.textContent = STATUS_LABEL[f.status] || f.status;
   title.appendChild(badge);
+  if (f.similarity !== null && f.similarity !== undefined) {
+    const sim = document.createElement("span");
+    sim.className = "badge meaning";
+    sim.title = "How closely the picture matches your words (about 0.25 to 0.35 is a good match)";
+    sim.textContent = (f.source === "both" ? "text + meaning " : "looks like it ") + f.similarity.toFixed(2);
+    title.appendChild(sim);
+  }
   if (f.missing) {
     item.classList.add("missing");
     const gone = document.createElement("span");
@@ -138,6 +145,7 @@ function searchUrl(offset) {
   if ($("dateFrom").value) p.set("date_from", $("dateFrom").value);
   if ($("dateTo").value) p.set("date_to", $("dateTo").value);
   if ($("statusFilter").value) p.set("status", $("statusFilter").value);
+  if (!$("mode").hidden && $("mode").value !== "auto") p.set("mode", $("mode").value);
   return "/api/search?" + p.toString();
 }
 
@@ -165,6 +173,7 @@ async function runSearch(append = false) {
     if (data.pending > 0 && data.total >= 0 && (hasQuery || data.total === 0)) {
       msg += ` ${data.pending} file${data.pending === 1 ? " is" : "s are"} still being indexed, so more results may appear.`;
     }
+    if (data.semantic_error) msg += ` (Search by meaning is unavailable: ${data.semantic_error})`;
     info.textContent = msg;
     info.className = "status";
     return data;
@@ -266,12 +275,90 @@ $("scanBtn").addEventListener("click", async () => {
     await runSearch(false);
     wasRunning = true;
     refreshIndex();
+    semWasBusy = true;
+    refreshSemantic();
   } catch (e) {
     setScanStatus(e.message, true);
   } finally {
     $("scanBtn").disabled = false;
   }
 });
+
+/* ---------- search by meaning (CLIP) ---------- */
+
+let semWasBusy = false;
+let semTimer = null;
+
+function mb(bytes) { return (bytes / 1e6).toFixed(0); }
+
+function renderSemantic(s) {
+  const d = s.download;
+  const settled = s.embedded + s.failed;
+  $("semBar").style.width = (s.images ? (settled / s.images) * 100 : 0) + "%";
+  $("semHelp").className = "status";
+  let help = "";
+  if (d.running) {
+    help = `Downloading ${d.file || "model"} (file ${d.index + 1} of ${d.files || "?"}): ${mb(d.done)} of ${mb(d.total)} MB. This is the only download the app makes.`;
+    $("semBar").style.width = (d.total ? (d.done / d.total) * 100 : 0) + "%";
+  } else if (d.error) {
+    help = `Download failed: ${d.error}. Press Download model to resume.`;
+    $("semHelp").className = "status error";
+  } else if (!s.installed) {
+    help = `Not set up. Download the model once (about ${s.approx_mb} MB). Afterwards everything works offline.`;
+  } else if (s.missing_packages.length) {
+    help = `Model downloaded, but packages are missing: ${s.missing_packages.join(", ")}. Run: pip install -r requirements-semantic.txt and restart.`;
+    $("semHelp").className = "status error";
+  }
+  $("semHelp").textContent = help;
+
+  let text = "";
+  if (s.ready) {
+    text = `${s.embedded} of ${s.images} images understood, ${s.failed} failed.`;
+    if (s.running && s.pausing) text += " Pausing after the current image...";
+    else if (s.running && s.current) text += ` Working on ${s.current}`;
+    else if (s.running) text += " Waiting for text indexing to finish first.";
+    else if (settled < s.images) text += " Paused.";
+  }
+  if (s.last_error) text += ` Stopped by an error: ${s.last_error}`;
+  $("semStatus").textContent = text;
+  $("semStatus").className = "status" + (s.last_error ? " error" : "");
+
+  $("semDownloadBtn").disabled = s.installed || d.running;
+  $("semStartBtn").disabled = !s.ready || s.running || settled >= s.images;
+  $("semPauseBtn").disabled = !s.running || s.pausing;
+  $("semRetryBtn").disabled = !s.ready || s.running || s.failed === 0;
+  $("mode").hidden = !(s.ready && s.embedded > 0);
+}
+
+async function refreshSemantic() {
+  clearTimeout(semTimer);
+  try {
+    const s = await api("/api/semantic/status");
+    renderSemantic(s);
+    const busy = s.running || s.download.running;
+    if (busy) semTimer = setTimeout(refreshSemantic, 1500);
+    else if (semWasBusy) await runSearch(false); // new image data: refresh results
+    semWasBusy = busy;
+  } catch (e) {
+    $("semStatus").textContent = e.message;
+  }
+}
+
+async function semAction(path) {
+  try { await api(path, { method: "POST" }); } catch (e) { $("semHelp").textContent = e.message; $("semHelp").className = "status error"; }
+  semWasBusy = true;
+  setTimeout(refreshSemantic, 300);
+}
+
+$("semDownloadBtn").addEventListener("click", () => {
+  if (confirm("Download the image-understanding model (about 600 MB) from huggingface.co?\n\nThis is the only download the app makes. After it finishes, everything runs offline.")) {
+    semAction("/api/semantic/download");
+  }
+});
+$("semStartBtn").addEventListener("click", () => semAction("/api/semantic/start"));
+$("semPauseBtn").addEventListener("click", () => semAction("/api/semantic/pause"));
+$("semRetryBtn").addEventListener("click", () => semAction("/api/semantic/retry"));
+$("mode").addEventListener("change", () => runSearch(false));
 
 /* ---------- folders, rescan and reset ---------- */
 
@@ -369,6 +456,7 @@ $("resetBtn").addEventListener("click", async () => {
   await runSearch(false);
   wasRunning = false;
   refreshIndex();
+  refreshSemantic();
 });
 
 /* ---------- wiring ---------- */
@@ -385,6 +473,7 @@ for (const id of ["dateFrom", "dateTo", "sort", "statusFilter"]) $(id).addEventL
 $("clearBtn").addEventListener("click", () => {
   $("q").value = ""; $("dateFrom").value = ""; $("dateTo").value = ""; $("sort").value = "relevance";
   $("statusFilter").value = "";
+  $("mode").value = "auto";
   document.querySelectorAll(".chip").forEach((c) => c.classList.toggle("active", c.dataset.type === ""));
   activeType = "";
   $("q").focus();
@@ -405,4 +494,5 @@ document.querySelectorAll(".chip").forEach((chip) => {
   const data = await runSearch(false);
   if (data && data.total > 0) $("manage").open = false; // already indexed: keep the search front and centre
   refreshIndex();
+  refreshSemantic();
 })();

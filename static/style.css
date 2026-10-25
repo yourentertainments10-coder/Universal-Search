@@ -80,3 +80,8 @@ details.panel:not([open]) summary { margin-bottom:0; }
 .danger { margin-top:20px; padding-top:14px; border-top:1px solid var(--border); display:flex; align-items:center; gap:12px; flex-wrap:wrap; }
 .danger .status { margin:0; }
 button.danger-btn { color:#d92d20; border-color:#d92d20; }
+
+/* ---- Milestone 6: search by meaning ---- */
+#semBar { height:100%; width:0; background:var(--accent); transition:width .4s; }
+.badge.meaning { color:var(--accent); border-color:var(--accent); }
+.semantic { margin-top:6px; }

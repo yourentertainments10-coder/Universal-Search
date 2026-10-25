@@ -23,6 +23,11 @@
         <button class="chip" data-type="document">Documents</button>
         <label class="inline">From <input type="date" id="dateFrom"></label>
         <label class="inline">To <input type="date" id="dateTo"></label>
+        <select id="mode" aria-label="Search mode" hidden>
+          <option value="auto">Text and meaning</option>
+          <option value="keyword">Text only</option>
+          <option value="semantic">Meaning only (images)</option>
+        </select>
         <select id="statusFilter" aria-label="Filter by indexing status">
           <option value="">Any status</option>
           <option value="failed">Failed</option>
@@ -65,6 +70,21 @@
       <div class="bar"><div id="barFill"></div></div>
       <p id="indexStatus" class="status"></p>
       <p id="ocrStatus" class="status"></p>
+
+      <div class="semantic">
+        <div class="row between index-head">
+          <strong>Search by meaning (images)</strong>
+          <div class="row">
+            <button id="semDownloadBtn" class="secondary">Download model</button>
+            <button id="semStartBtn" class="secondary">Start</button>
+            <button id="semPauseBtn" class="secondary">Pause</button>
+            <button id="semRetryBtn" class="secondary">Retry failed</button>
+          </div>
+        </div>
+        <div class="bar"><div id="semBar"></div></div>
+        <p id="semStatus" class="status"></p>
+        <p id="semHelp" class="status"></p>
+      </div>
 
       <div class="danger">
         <button id="resetBtn" class="secondary danger-btn">Reset search index</button>

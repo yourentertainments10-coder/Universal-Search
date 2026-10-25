@@ -81,6 +81,18 @@ MIGRATIONS = [
     ALTER TABLE files ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
     ALTER TABLE files ADD COLUMN retry_after TEXT;
     """,
+    # 5: image embeddings for semantic search (Milestone 6). A row with vector NULL records a failure.
+    """
+    CREATE TABLE embeddings (
+        file_id    INTEGER PRIMARY KEY REFERENCES files(id) ON DELETE CASCADE,
+        model      TEXT NOT NULL,
+        mtime_ns   INTEGER NOT NULL,
+        dim        INTEGER NOT NULL DEFAULT 0,
+        vector     BLOB,
+        error      TEXT,
+        created_ns INTEGER NOT NULL
+    );
+    """,
 ]
 
 FTS_MIGRATION = 3  # first migration that needs SQLite FTS5
