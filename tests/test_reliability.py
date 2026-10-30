@@ -328,6 +328,18 @@ class OfflineAndPrivacyTests(Base):
             text = f.read_text(encoding="utf-8")
             self.assertEqual(re.findall(r"(?:https?:)?//[\w.-]+\.[a-z]{2,}", text), [], f.name)
 
+    def test_launcher_only_runs_pip_when_requirements_changed(self):
+        lines = (ROOT / "run.bat").read_text().splitlines()
+        guard = next(i for i, l in enumerate(lines) if l.strip().startswith("if errorlevel 1"))
+        pips = [i for i, l in enumerate(lines) if "pip install" in l]
+        self.assertTrue(pips and all(i > guard for i in pips), "pip must only run inside the 'requirements changed' block")
+        self.assertTrue(any("fc /b requirements.txt" in l for l in lines))
+
+    def test_ci_workflow_runs_the_test_suite(self):
+        text = (ROOT / ".github" / "workflows" / "tests.yml").read_text()
+        self.assertIn("unittest discover -s tests", text)
+        self.assertIn("windows-latest", text)
+
     def test_server_is_started_on_the_loopback_address_only(self):
         bat = (ROOT / "run.bat").read_text()
         self.assertIn("--host 127.0.0.1", bat)

@@ -1,7 +1,7 @@
 # AI Universal Personal Search
 
 Local-first, privacy-focused search across photos, screenshots, PDFs and documents.
-Nothing is uploaded; the server binds to `127.0.0.1` only.
+Nothing is uploaded; the server binds to `127.0.0.1` only. The app makes no network connections while you use it, except the model download you start yourself for search by meaning. (`pip` contacts the package index only during setup, on the first start or when `requirements.txt` changes.)
 
 ## Roadmap
 1. Local web prototype (Python 3.10+, FastAPI, HTML/CSS/JS) - **Milestone 1 done**
@@ -28,6 +28,12 @@ pip install -r requirements.txt
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
+## Supported files
+- **Images:** JPG, JPEG, PNG, WebP, BMP, GIF, TIFF (text is read with OCR; HEIC is listed but not read yet).
+- **PDFs:** text PDFs and scanned PDFs (scanned pages need an OCR engine).
+- **Documents:** TXT, Markdown, DOCX.
+- **Not supported yet:** DOC, XLSX, PPTX, e-mail, chat apps, and text in non-Latin scripts such as Hindi (the OCR models read English).
+
 ## Searching
 Type in the search box; results update as you type.
 - Several words must all appear: `salary calculation`
@@ -44,7 +50,7 @@ Finds photos by what they show, even when no text is visible: `college farewell 
 It uses a local CLIP model (OpenAI CLIP ViT-B/32, MIT licence) run with ONNX Runtime. Photos and queries never leave this computer.
 
 1. Install the extra packages inside `.venv`: `pip install -r requirements-semantic.txt`
-2. Download the model once (about 606 MB; `CLIP_VARIANT=small` gives a 154 MB, faster, slightly less accurate version): press **Download model** in *Folders and indexing*, or run `python -m app.semantic download`. This is the only network use in the whole app, it needs your click, and it resumes if interrupted. The files are pinned to a fixed revision and stored in `data/models/`.
+2. Download the model once (about 606 MB; `CLIP_VARIANT=small` gives a 154 MB, faster, slightly less accurate version): press **Download model** in *Folders and indexing*, or run `python -m app.semantic download`. This is the only network connection the app itself makes, it needs your click, and it resumes if interrupted. The files are pinned to a fixed revision and stored in `data/models/`.
 3. Scan a folder. Images are embedded in the background after text indexing finishes (one image takes roughly 0.05 to 0.3 s on a typical PC). Progress and Pause are in the same panel.
 4. A *Search mode* menu appears next to the filters: **Text and meaning** (default, results from both are merged and files found both ways rank first), **Text only**, **Meaning only (images)**. Meaning matches show a `looks like it 0.27` badge.
 
